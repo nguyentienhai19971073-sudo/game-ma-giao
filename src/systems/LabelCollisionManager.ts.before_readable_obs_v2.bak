@@ -1,0 +1,490 @@
+// CHUA_ONLINE_READABLE_PANELS_V1
+import * as THREE from 'three';
+import { TempleSceneMode } from '../types/temple';
+import { SANCTUARY_BUDDHA_BOUNDS } from './SeatManager';
+
+export interface ScreenRect {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+export interface LabelCandidateInput {
+  userId: string;
+  username: string;
+  worldX: number;
+  worldY: number;
+  worldZ: number;
+  headY: number;
+  lastComment?: string;
+  lastCommentAt?: number;
+  ritualStatusLabel?: string;
+  isSpeaking: boolean;
+  isCeremonyActor: boolean;
+  isRecentlyActive: boolean;
+  seatIndex: number;
+}
+
+export interface SolvedOverlayPlacement {
+  userId: string;
+  username: string;
+  anchorX: number;
+  anchorY: number;
+  // Small character name label (username ONLY — zero avatar!)
+  nameVisible: boolean;
+  nameOpacity: number;
+  nameX: number;
+  nameY: number;
+  nameRect: ScreenRect | null;
+  ritualLabelText: string;
+  // Configurable-duration overhead comment bubble (original comment ONLY — no avatar!)
+  bubbleVisible: boolean;
+  bubbleOpacity: number;
+  bubbleText: string;
+  bubbleX: number;
+  bubbleY: number;
+  bubbleRect: ScreenRect | null;
+}
+
+export interface LabelLayoutOptions {
+  viewportWidth: number;
+  viewportHeight: number;
+  now: number;
+  showUsernames: boolean;
+  showCommentBubbles: boolean;
+  panelScale?: number;
+  showLeaderboard?: boolean;
+  showGiftPanel?: boolean;
+  commentDurationMs?: number;
+  sceneMode?: TempleSceneMode;
+}
+
+export interface LabelLayoutResult {
+  placements: Map<string, SolvedOverlayPlacement>;
+  items: SolvedOverlayPlacement[];
+  buddhaExclusionRect: ScreenRect;
+  altarExclusionRect: ScreenRect;
+  visibleNameCount: number;
+  visibleBubbleCount: number;
+}
+
+const _projVec = new THREE.Vector3();
+const _bTop = new THREE.Vector3();
+const _bBot = new THREE.Vector3();
+const _bSide = new THREE.Vector3();
+const _aTop = new THREE.Vector3();
+const _aBot = new THREE.Vector3();
+const _aSide = new THREE.Vector3();
+
+export function screenRectsOverlap(a: ScreenRect, b: ScreenRect, pad = 0): boolean {
+  return !(
+    a.right + pad <= b.left ||
+    a.left - pad >= b.right ||
+    a.bottom + pad <= b.top ||
+    a.top - pad >= b.bottom
+  );
+}
+
+export function isRectInsideViewport(
+  rect: ScreenRect,
+  viewportWidth: number,
+  viewportHeight: number,
+  margin = 4,
+): boolean {
+  return (
+    rect.left >= margin - 0.5 &&
+    rect.right <= viewportWidth - margin + 0.5 &&
+    rect.top >= margin - 0.5 &&
+    rect.bottom <= viewportHeight - margin + 0.5
+  );
+}
+
+function estimateNameWidth(username: string, scale: number): number {
+  const charCount = Array.from(username).length;
+  return Math.min(86, Math.max(34, Math.min(charCount, 17) * 5.15 + 13)) * scale;
+}
+
+function estimateBubbleDims(comment: string, scale: number): { width: number; height: number } {
+  const charCount = Array.from(comment).length;
+  const width = Math.min(122, Math.max(50, Math.min(charCount, 26) * 5.05 + 18)) * scale;
+  const lines = charCount > 22 ? 2 : 1;
+  const height = (lines === 2 ? 38 : 25) * scale;
+  return { width, height };
+}
+
+// Keep tags physically attached to the projected head. Do not flank the altar,
+// move them multiple rows away, or show a "floating" comment for another user.
+// A pair (comment + name) shares the same screen-space X coordinate.
+const HEAD_STACK_OFFSETS: ReadonlyArray<readonly [number, number]> = [
+  [0, 0], [-6, -3], [6, -3], [0, -7], [-10, -6], [10, -6],
+];
+
+/**
+ * Projects 3D character positions to 2D screen coordinates and solves non-overlapping
+ * screen-space placement for both timed Comment Bubbles and persistent Character Name Labels.
+ *
+ * Guarantees:
+ * - Avoids overlaps when space permits, but never hides an in-frame participant username.
+ * - Never merges multiple usernames into a single label.
+ * - Never places labels or bubbles outside the camera viewport.
+ * - Never covers the Golden Buddha Statue or central sanctuary altar.
+ * - Names persist with each visible worshipper until that participant exits.
+ * - In very dense rows, comment bubbles can hide; usernames remain head-anchored.
+ */
+export function solveLabelAndBubbleLayout(
+  candidates: LabelCandidateInput[],
+  camera: THREE.Camera,
+  options: LabelLayoutOptions,
+): LabelLayoutResult {
+  const {
+    viewportWidth,
+    viewportHeight,
+    now,
+    showUsernames,
+    showCommentBubbles,
+    panelScale = 0.9,
+    showLeaderboard = false,
+    showGiftPanel = false,
+    commentDurationMs = 5000,
+    sceneMode = 'original_3d',
+  } = options;
+
+  const halfW = viewportWidth * 0.5;
+  const halfH = viewportHeight * 0.5;
+  const scale = Math.max(0.75, Math.min(1.15, panelScale));
+  const edgePad = 5;
+  const topSafeY = Math.max(36, 40 * scale);
+  const bottomSafeY = Math.min(viewportHeight - 10, viewportHeight - 36 * scale);
+
+  let buddhaExclusionRect: ScreenRect;
+  let altarExclusionRect: ScreenRect;
+  let buddhaCenterX = halfW;
+
+  if (sceneMode === 'image_background') {
+    // Exact painted Golden Buddha (halo + head + body + lotus pedestal: x = 22%..78%, y = 10%..45.5%)
+    // and Carved Wooden Offering Altar (x = 14%..86%, y = 45.2%..58.5%) in `/assets/temple-background.png`
+    buddhaExclusionRect = {
+      left: viewportWidth * 0.22,
+      right: viewportWidth * 0.78,
+      top: viewportHeight * 0.1,
+      bottom: viewportHeight * 0.455,
+    };
+    altarExclusionRect = {
+      left: viewportWidth * 0.18,
+      right: viewportWidth * 0.82,
+      top: viewportHeight * 0.452,
+      bottom: viewportHeight * 0.578,
+    };
+  } else {
+    // 1. Project Golden Buddha Statue Exclusion Zone (head halo crown -> lotus pedestal)
+    _bTop
+      .set(
+        SANCTUARY_BUDDHA_BOUNDS.centerX,
+        SANCTUARY_BUDDHA_BOUNDS.haloTopY,
+        SANCTUARY_BUDDHA_BOUNDS.centerZ,
+      )
+      .project(camera);
+    _bBot
+      .set(
+        SANCTUARY_BUDDHA_BOUNDS.centerX,
+        SANCTUARY_BUDDHA_BOUNDS.pedestalBottomY,
+        SANCTUARY_BUDDHA_BOUNDS.centerZ,
+      )
+      .project(camera);
+    _bSide
+      .set(
+        SANCTUARY_BUDDHA_BOUNDS.halfWidthX,
+        (SANCTUARY_BUDDHA_BOUNDS.haloTopY + SANCTUARY_BUDDHA_BOUNDS.pedestalBottomY) * 0.5,
+        SANCTUARY_BUDDHA_BOUNDS.centerZ,
+      )
+      .project(camera);
+
+    buddhaCenterX = _bTop.x * halfW + halfW;
+    const buddhaHalfPxW = Math.abs(_bSide.x * halfW + halfW - buddhaCenterX) + 6;
+    const bY1 = -_bTop.y * halfH + halfH;
+    const bY2 = -_bBot.y * halfH + halfH;
+
+    buddhaExclusionRect = {
+      left: buddhaCenterX - buddhaHalfPxW,
+      right: buddhaCenterX + buddhaHalfPxW,
+      top: Math.min(bY1, bY2) - 4,
+      bottom: Math.max(bY1, bY2) + 4,
+    };
+
+    // 2. Project Central Elevated Incense Altar Table Exclusion Zone (strictly within central aisle |x| <= 1.32)
+    _aTop.set(0, 4.45, -10.8).project(camera);
+    _aBot.set(0, 0.45, -10.0).project(camera);
+    _aSide.set(1.32, 2.55, -10.4).project(camera);
+
+    const altarCenterX = _aTop.x * halfW + halfW;
+    const altarHalfPxW = Math.abs(_aSide.x * halfW + halfW - altarCenterX) + 2;
+    const aY1 = -_aTop.y * halfH + halfH;
+    const aY2 = -_aBot.y * halfH + halfH;
+    altarExclusionRect = {
+      left: altarCenterX - altarHalfPxW,
+      right: altarCenterX + altarHalfPxW,
+      top: Math.min(aY1, aY2),
+      bottom: Math.max(aY1, aY2),
+    };
+  }
+
+  // Optional corner HUD panel exclusion zones so labels never collide with edge panels
+  const hudExclusionRects: ScreenRect[] = [buddhaExclusionRect, altarExclusionRect];
+  if (showLeaderboard) {
+    hudExclusionRects.push({
+      left: 0,
+      right: 106 * scale + 8,
+      top: 0,
+      bottom: topSafeY + 132 * scale,
+    });
+  }
+  if (showGiftPanel) {
+    hudExclusionRects.push({
+      left: viewportWidth - (122 * scale + 8),
+      right: viewportWidth,
+      top: 0,
+      bottom: topSafeY + 148 * scale,
+    });
+  }
+
+  // 3. Project all candidates into screen space
+  interface ProjectedItem {
+    input: LabelCandidateInput;
+    inFrustum: boolean;
+    sx: number;
+    sy: number;
+    hasActiveBubble: boolean;
+    bubbleAgeMs: number;
+    priorityScore: number;
+  }
+
+  const projected: ProjectedItem[] = [];
+  const placements = new Map<string, SolvedOverlayPlacement>();
+
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    _projVec.set(c.worldX, c.worldY + c.headY + 0.14, c.worldZ).project(camera);
+
+    const inFrustum =
+      _projVec.z >= -1 &&
+      _projVec.z <= 1 &&
+      _projVec.x >= -0.96 &&
+      _projVec.x <= 0.96 &&
+      _projVec.y >= -0.96 &&
+      _projVec.y <= 0.96;
+
+    const sx = _projVec.x * halfW + halfW;
+    const sy = -_projVec.y * halfH + halfH;
+
+    const bubbleAgeMs =
+      c.lastComment && c.lastCommentAt !== undefined ? now - c.lastCommentAt : Infinity;
+    const hasActiveBubble = Boolean(
+      showCommentBubbles && c.lastComment && bubbleAgeMs >= 0 && bubbleAgeMs < commentDurationMs,
+    );
+
+    const priorityScore =
+      (c.isSpeaking ? 10000 : 0) +
+      (hasActiveBubble ? 6000 + Math.max(0, 1000 - bubbleAgeMs * 0.2) : 0) +
+      (c.isCeremonyActor ? 3500 : 0) +
+      (c.isRecentlyActive ? 1200 : 0) +
+      (c.worldZ + 20) * 18 -
+      c.seatIndex * 0.25;
+
+    projected.push({
+      input: c,
+      inFrustum,
+      sx,
+      sy,
+      hasActiveBubble,
+      bubbleAgeMs,
+      priorityScore,
+    });
+
+    placements.set(c.userId, {
+      userId: c.userId,
+      username: c.username,
+      anchorX: sx,
+      anchorY: sy,
+      nameVisible: false,
+      nameOpacity: 0,
+      nameX: sx,
+      nameY: sy,
+      nameRect: null,
+      ritualLabelText: c.ritualStatusLabel || '',
+      bubbleVisible: false,
+      bubbleOpacity: 0,
+      bubbleText: c.lastComment || '',
+      bubbleX: sx,
+      bubbleY: sy - 16 * scale,
+      bubbleRect: null,
+    });
+  }
+
+  const placedRects: ScreenRect[] = [];
+  let visibleBubbleCount = 0;
+  let visibleNameCount = 0;
+
+  // Place a participant's comment and name as one head-anchored vertical stack.
+  // Comments are rendered ABOVE the name. In crowded views hide lower-priority
+  // stacks rather than disconnecting them from their owner's 3D head position.
+  const ordered = projected
+    .filter((p) => p.inFrustum)
+    .sort((a, b) => b.priorityScore - a.priorityScore);
+
+  const isAvailable = (rect: ScreenRect): boolean =>
+    isRectInsideViewport(rect, viewportWidth, viewportHeight, edgePad) &&
+    !hudExclusionRects.some((ex) => screenRectsOverlap(rect, ex, 2)) &&
+    !placedRects.some((pr) => screenRectsOverlap(rect, pr, 3));
+
+  for (const item of ordered) {
+    const out = placements.get(item.input.userId)!;
+    const hasName = showUsernames;
+    const hasBubble = showCommentBubbles && item.hasActiveBubble;
+    if (!hasName && !hasBubble) continue;
+
+    const nameWidth = estimateNameWidth(item.input.username, scale);
+    const nameHeight = 16 * scale;
+    const bubble = hasBubble
+      ? estimateBubbleDims(item.input.lastComment || '', scale)
+      : null;
+    const bubbleGap = 4 * scale;
+    const baseNameBottom = item.sy - 1.5 * scale;
+
+    let bestNameRect: ScreenRect | null = null;
+    let bestBubbleRect: ScreenRect | null = null;
+    let bestNameX = item.sx;
+    let bestNameY = baseNameBottom;
+    let bestBubbleX = item.sx;
+    let bestBubbleY = baseNameBottom - nameHeight - bubbleGap;
+
+    for (const [offsetX, offsetY] of HEAD_STACK_OFFSETS) {
+      const cx = item.sx + offsetX * scale;
+      const nameBottom = baseNameBottom + offsetY * scale;
+      const nameRect: ScreenRect = {
+        left: cx - nameWidth * 0.5,
+        right: cx + nameWidth * 0.5,
+        top: nameBottom - nameHeight,
+        bottom: nameBottom,
+      };
+      const bubbleBottom = hasName
+        ? nameRect.top - bubbleGap
+        : nameBottom - bubbleGap;
+      const bubbleRect: ScreenRect | null = bubble
+        ? {
+            left: cx - bubble.width * 0.5,
+            right: cx + bubble.width * 0.5,
+            top: bubbleBottom - bubble.height,
+            bottom: bubbleBottom,
+          }
+        : null;
+
+      if (hasName && !isAvailable(nameRect)) continue;
+      if (bubbleRect && !isAvailable(bubbleRect)) continue;
+
+      bestNameRect = hasName ? nameRect : null;
+      bestBubbleRect = bubbleRect;
+      bestNameX = cx;
+      bestNameY = nameBottom;
+      bestBubbleX = cx;
+      bestBubbleY = bubbleBottom;
+      break;
+    }
+
+    // When a long bubble cannot fit, preserve a compact name label at the head.
+    // Never move the bubble far away or attach it to another participant.
+    if (!bestNameRect && !bestBubbleRect && hasName) {
+      for (const [offsetX, offsetY] of HEAD_STACK_OFFSETS) {
+        const cx = item.sx + offsetX * scale;
+        const by = baseNameBottom + offsetY * scale;
+        const nameRect = {
+          left: cx - nameWidth * 0.5,
+          right: cx + nameWidth * 0.5,
+          top: by - nameHeight,
+          bottom: by,
+        };
+        if (!isAvailable(nameRect)) continue;
+        bestNameRect = nameRect;
+        bestNameX = cx;
+        bestNameY = by;
+        break;
+      }
+    }
+
+    // Allow a comment to remain above the head even if the username is hidden
+    // in a very dense scene, while respecting the exact same tight anchor.
+    if (!bestNameRect && !bestBubbleRect && bubble) {
+      for (const [offsetX, offsetY] of HEAD_STACK_OFFSETS) {
+        const cx = item.sx + offsetX * scale;
+        const by = baseNameBottom + offsetY * scale - bubbleGap;
+        const bubbleRect = {
+          left: cx - bubble.width * 0.5,
+          right: cx + bubble.width * 0.5,
+          top: by - bubble.height,
+          bottom: by,
+        };
+        if (!isAvailable(bubbleRect)) continue;
+        bestBubbleRect = bubbleRect;
+        bestBubbleX = cx;
+        bestBubbleY = by;
+        break;
+      }
+    }
+
+    // Persistent identity labels must never time out or vanish due to crowd collisions.
+    // If all collision-free positions are occupied, allow only the NAME to overlap as
+    // a last resort while keeping it close to the projected head and inside the frame.
+    if (!bestNameRect && hasName) {
+      const cx = Math.min(
+        viewportWidth - edgePad - nameWidth * 0.5,
+        Math.max(edgePad + nameWidth * 0.5, item.sx),
+      );
+      const nameBottom = Math.min(
+        viewportHeight - edgePad,
+        Math.max(edgePad + nameHeight, baseNameBottom),
+      );
+      bestNameX = cx;
+      bestNameY = nameBottom;
+      bestNameRect = {
+        left: cx - nameWidth * 0.5,
+        right: cx + nameWidth * 0.5,
+        top: nameBottom - nameHeight,
+        bottom: nameBottom,
+      };
+    }
+
+    if (bestNameRect) {
+      out.nameVisible = true;
+      out.nameX = bestNameX;
+      out.nameY = bestNameY;
+      out.nameRect = bestNameRect;
+      out.nameOpacity = 1;
+      placedRects.push(bestNameRect);
+      visibleNameCount++;
+    }
+    if (bestBubbleRect) {
+      const fadeStartMs = commentDurationMs - 1000;
+      const fadeRatio = item.bubbleAgeMs <= fadeStartMs
+        ? 1
+        : Math.max(0, 1 - (item.bubbleAgeMs - fadeStartMs) / 1000);
+      out.bubbleVisible = fadeRatio > 0.02;
+      out.bubbleOpacity = Number(fadeRatio.toFixed(2));
+      out.bubbleX = bestBubbleX;
+      out.bubbleY = bestBubbleY;
+      out.bubbleRect = bestBubbleRect;
+      if (out.bubbleVisible) {
+        placedRects.push(bestBubbleRect);
+        visibleBubbleCount++;
+      }
+    }
+  }
+
+  return {
+    placements,
+    items: Array.from(placements.values()),
+    buddhaExclusionRect,
+    altarExclusionRect,
+    visibleNameCount,
+    visibleBubbleCount,
+  };
+}

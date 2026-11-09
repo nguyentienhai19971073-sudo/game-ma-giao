@@ -1,0 +1,29 @@
+CHÙA ONLINE — V6: TÂM THÀNH LỄ PHẬT 1 DÒNG, AVATAR BÊN DƯỚI
+
+Sửa duy nhất file: src/components/ui/CenterCeremonialPanel.tsx
+- Dời nhãn tiêu đề đang nổi phía trên vào vị trí một hàng riêng trong bảng.
+- Tiêu đề luôn không xuống hàng, giảm chữ và khoảng cách chữ vừa khung.
+- Avatar và nickname nằm hàng dưới, không che tiêu đề.
+- Bảng, vị trí thông báo, nghiệp vụ nghi lễ, Gift ID, giọng đọc không thay đổi.
+- Có sao lưu tự động .tsx.bak_before_v6_YYYYMMDD_HHMMSS
+- Nếu cấu trúc file không khớp, script tự dừng mà không thay file.
+
+CÀI:
+1. Dừng game đang chạy bằng Control + C (nên cài sau LIVE).
+2. Tải ZIP về Downloads.
+3. Chạy trong Terminal:
+
+cd ~/CHUA_ONLINE_TEST/Chua_Online_3D
+unzip -o ~/Downloads/CHUA_ONLINE_V6_TIEU_DE_MOT_DONG_AVATAR_XUONG.zip -d .
+python3 apply_chua_tieu_de_1_dong_avatar_xuong.py
+npm run build
+
+4. Khi build thành công:
+npm run dev
+
+5. Chrome: Command+Shift+R. OBS: làm mới nguồn Trình duyệt.
+
+KIỂM TRA:
+grep -n CHUA_TITLE_SINGLE_LINE_AVATAR_BELOW_V6 src/components/ui/CenterCeremonialPanel.tsx
+
+Nếu script báo "cấu trúc bảng nghi lễ khác dự kiến", gửi log để sửa bản vá theo đúng source; không thay file thủ công.

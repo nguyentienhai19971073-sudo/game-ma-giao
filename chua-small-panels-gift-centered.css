@@ -1,0 +1,128 @@
+/* CHUA_ONLINE_COMPACT_PANELS_GIFT_CENTERED_V1
+ * Only reduce: MERIT, OFFERINGS, gift-related announcements.
+ * Only gift-related announcements have centered text and content.
+ * Never affects the "Kết quả Xin Xăm" popup.
+ */
+
+/* Merit panel: shrink frame and type ~15-20%, keep ranks LEFT and points RIGHT. */
+.chua-readability-v2 .chua-compact-merit-holder {
+  flex: 0 1 39%;
+  width: 39%;
+  max-width: 195px;
+  min-width: 0;
+}
+.chua-readability-v2 .chua-compact-merit-holder [aria-label="Bảng Công Đức"] {
+  width: 100% !important;
+  max-width: 195px !important;
+  min-width: 0;
+}
+.chua-readability-v2 .chua-compact-merit-holder [aria-label="Bảng Công Đức"] h2 {
+  font-size: clamp(11.5px, 1.25vw, 15px) !important;
+  line-height: 1.12 !important;
+}
+.chua-readability-v2 .chua-compact-merit-holder [aria-label="Bảng Công Đức"] .flex.items-center.justify-between span,
+.chua-readability-v2 .chua-compact-merit-holder [aria-label="Bảng Công Đức"] p {
+  font-size: clamp(10.5px, 1.15vw, 13.5px) !important;
+  line-height: 1.18 !important;
+}
+
+/* Offering panel: compact width/rows/type, retain original title and price layout. */
+.chua-readability-v2 .chua-readability-offerings {
+  flex: 0 1 45%;
+  width: 45% !important;
+  max-width: 225px !important;
+  min-width: 0;
+}
+.chua-readability-v2 [aria-label="Cúng Dường Cầu An"] h2 {
+  font-size: clamp(11.5px, 1.25vw, 15px) !important;
+  line-height: 1.17 !important;
+}
+.chua-readability-v2 [aria-label="Cúng Dường Cầu An"] [role="button"],
+.chua-readability-v2 [aria-label="Cúng Dường Cầu An"] .divide-y > div {
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
+}
+.chua-readability-v2 [aria-label="Cúng Dường Cầu An"] .divide-y > div p,
+.chua-readability-v2 [aria-label="Cúng Dường Cầu An"] .divide-y > div span {
+  font-size: clamp(10.5px, 1.15vw, 13.5px) !important;
+  line-height: 1.2 !important;
+}
+.chua-readability-v2 [aria-label="Cúng Dường Cầu An"] .divide-y > div .font-mono-tabular {
+  font-size: clamp(10px, 1.1vw, 13px) !important;
+  white-space: nowrap;
+  text-align: right !important; /* price is never centered */
+}
+.chua-readability-v2 [aria-label="Cúng Dường Cầu An"] .divide-y > div > div:first-child svg,
+.chua-readability-v2 [aria-label="Cúng Dường Cầu An"] .divide-y > div > div:first-child img {
+  width: 14px !important;
+  height: 14px !important;
+}
+.chua-readability-v2 [aria-label="Cúng Dường Cầu An"] .divide-y {
+  max-height: min(28vh, 310px) !important;
+}
+
+/* The bottom toast is centered ONLY for a gift or gift-triggered ritual. */
+.chua-readability-v2 .chua-gift-toast-centered {
+  align-self: center !important;
+  width: fit-content;
+  max-width: min(72%, 365px) !important;
+  padding: 5px 9px !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center !important;
+}
+.chua-readability-v2 .chua-gift-toast-centered p,
+.chua-readability-v2 .chua-gift-toast-centered strong,
+.chua-readability-v2 .chua-gift-toast-centered span {
+  font-size: clamp(11px, 1.2vw, 15px) !important;
+  line-height: 1.23 !important;
+  text-align: center !important;
+}
+
+/* Center gift ceremony notification: card, avatar and text all centered.
+   Follow/share announcements without gift are left unchanged. */
+.chua-readability-v2 .chua-gift-announcement-centered {
+  width: 73% !important;
+  max-width: 410px !important;
+}
+.chua-readability-v2 .chua-gift-announcement-centered > div {
+  padding: 7px 10px !important;
+}
+.chua-readability-v2 .chua-gift-announcement-centered > div > .flex.items-center.gap-2 {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  text-align: center;
+}
+.chua-readability-v2 .chua-gift-announcement-centered .chua-avatar-readable {
+  width: 37px !important;
+  height: 37px !important;
+}
+.chua-readability-v2 .chua-gift-announcement-centered .min-w-0.flex-1 {
+  width: 100%;
+  text-align: center !important;
+}
+.chua-readability-v2 .chua-gift-announcement-centered p {
+  font-size: clamp(11px, 1.2vw, 15px) !important;
+  line-height: 1.2 !important;
+  text-align: center !important;
+  white-space: normal !important;
+  overflow-wrap: break-word;
+}
+.chua-readability-v2 .chua-gift-announcement-centered p.font-display {
+  font-size: clamp(15px, 1.65vw, 21px) !important;
+  line-height: 1.2 !important;
+}
+
+@media (max-width: 560px) {
+  .chua-readability-v2 .chua-compact-merit-holder { width: 38%; max-width: none; }
+  .chua-readability-v2 .chua-readability-offerings { width: 44% !important; max-width: none !important; }
+  .chua-readability-v2 .chua-compact-merit-holder [aria-label="Bảng Công Đức"] h2,
+  .chua-readability-v2 [aria-label="Cúng Dường Cầu An"] h2 { font-size: 11.5px !important; }
+  .chua-readability-v2 .chua-compact-merit-holder [aria-label="Bảng Công Đức"] .flex.items-center.justify-between span,
+  .chua-readability-v2 [aria-label="Cúng Dường Cầu An"] .divide-y > div p,
+  .chua-readability-v2 [aria-label="Cúng Dường Cầu An"] .divide-y > div span { font-size: 10.5px !important; }
+}

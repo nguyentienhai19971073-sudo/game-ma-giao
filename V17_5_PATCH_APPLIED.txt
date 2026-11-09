@@ -1,0 +1,7 @@
+TĨNH TÂM ONLINE V17.5 PATCH APPLIED (draft)
+Requested changes:
+- move seats closer to Buddha
+- enlarge user characters
+- keep Buddha at 100% aspect ratio
+- make seating occupy roughly 2/3 of screen
+- keep narrow center aisle

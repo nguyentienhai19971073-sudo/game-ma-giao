@@ -1,0 +1,705 @@
+import 'dotenv/config';
+import express, { Request, Response, NextFunction } from 'express';
+import { createServer } from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { Server as SocketIOServer } from 'socket.io';
+import { readObsSyncSettings, writeObsSyncSettings } from './server/obsSyncStore.ts'; // CHUA_OBS_SYNC_V10
+import { createServer as createViteServer } from 'vite';
+import { TikTokLiveAdapter } from './server/tiktokAdapter.ts';
+import {
+  GiftValidationError,
+  giftStore,
+  isAdminAuthRequired,
+  isAdminAuthorizedRequest,
+} from './server/giftStore.ts';
+import {
+  FortuneValidationError,
+  fortuneStore,
+} from './server/fortuneStore.ts';
+import {
+  fetchVieNeuVoices,
+  generatePeacefulVietnameseGreeting,
+  synthesizeSpeechOnServer,
+} from './server/ttsProxy.ts';
+import {
+  DEFAULT_PEACEFUL_MESSAGES,
+  TikTokNormalizedEvent,
+  VieNeuMode,
+  normalizeGiftId,
+  getXinXamGiftIds,
+} from './src/types/temple.ts';
+import { maGiaoConfigStore } from './server/maGiaoStore.ts';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+function requireAdminAuth(req: Request, res: Response, next: NextFunction): void {
+  if (!isAdminAuthorizedRequest(req)) {
+    res.status(401).json({
+      ok: false,
+      error:
+        'Yêu cầu mã quản trị (ADMIN_ACCESS_TOKEN) hợp lệ để thay đổi cấu hình quà tặng trên máy chủ.',
+      authRequired: true,
+    });
+    return;
+  }
+  next();
+}
+
+async function startServer() {
+  const app = express();
+  const httpServer = createServer(app);
+  const io = new SocketIOServer(httpServer, {
+    cors: {
+      origin: '*',
+      methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    },
+  });
+
+  app.use(express.json({ limit: '2mb' }));
+
+  const broadcastGiftsUpdated = () => {
+    io.emit('gifts:updated', {
+      gifts: giftStore.listGifts(),
+      presets: giftStore.listPresets(),
+    });
+  };
+
+  const broadcastUnknownGiftsUpdated = () => {
+    io.emit('gifts:unknown_updated', {
+      unknownGifts: giftStore.listUnknownGifts(),
+    });
+  };
+
+  const broadcastXinXamUpdated = () => {
+    io.emit('xinxam:updated', fortuneStore.getSnapshot());
+  };
+
+  const tiktokAdapter = new TikTokLiveAdapter(
+    (normalizedEvent: TikTokNormalizedEvent) => {
+      if (normalizedEvent.type === 'gift' && normalizedEvent.giftId !== undefined) {
+        const mapped = giftStore.getGiftById(normalizedEvent.giftId);
+        const xinXamCfg = fortuneStore.getSettings();
+        const isXinXamGift =
+          xinXamCfg.enabled &&
+          getXinXamGiftIds(xinXamCfg).includes(normalizeGiftId(normalizedEvent.giftId));
+        if (!mapped && !isXinXamGift && !normalizedEvent.isStreakCompletionOnly) {
+          const logged = giftStore.recordUnknownGift({
+            giftId: normalizedEvent.giftId,
+            giftName: normalizedEvent.giftName,
+            iconUrl: normalizedEvent.giftPictureUrl,
+            diamondCount: normalizedEvent.diamondCount,
+            countDelta: Math.max(1, Number(normalizedEvent.giftCount || 1)),
+            username: normalizedEvent.username,
+            isDemo: normalizedEvent.isDemo,
+          });
+          if (logged) {
+            broadcastUnknownGiftsUpdated();
+          }
+        }
+      }
+      io.emit('tiktok:event', normalizedEvent);
+    },
+    (snapshot) => {
+      io.emit('tiktok:status', snapshot);
+    },
+  );
+
+// CHUA_OBS_SYNC_V10: persist only UI/camera settings across Chrome and OBS.
+// Localhost-only writes avoid granting LAN viewers control of the LIVE overlay.
+app.get('/api/obs-sync', (_req, res) => {
+  res.json({ ok: true, snapshot: readObsSyncSettings() });
+});
+app.put('/api/obs-sync', (req, res) => {
+  const ip = req.socket.remoteAddress || '';
+  if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(ip)) {
+    res.status(403).json({ ok: false, error: 'Chỉ cho phép thay đổi cấu hình từ chính MacBook.' });
+    return;
+  }
+  try {
+    const snapshot = writeObsSyncSettings(req.body);
+    io.emit('temple:obs_sync_settings', snapshot);
+    res.json({ ok: true, savedAt: snapshot.savedAt });
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error instanceof Error ? error.message : 'Cấu hình không hợp lệ' });
+  }
+});
+
+// Health & Server Capabilities Endpoint
+  app.get('/api/health', (_req, res) => {
+    res.json({
+      ok: true,
+      timestamp: Date.now(),
+      connection: tiktokAdapter.getSnapshot(),
+      giftStorage: giftStore.getStorageMetadata(),
+      adminAuthRequired: isAdminAuthRequired(),
+    });
+  });
+
+  // ============================================================================
+  // DYNAMIC TIKTOK GIFT MANAGEMENT & PERSISTENT SQLITE REGISTRY ENDPOINTS
+  // ============================================================================
+
+  app.get('/api/gifts', (_req, res) => {
+    res.json({
+      ok: true,
+      gifts: giftStore.listGifts(),
+      presets: giftStore.listPresets(),
+      unknownGifts: giftStore.listUnknownGifts(),
+      storage: giftStore.getStorageMetadata(),
+      authRequired: isAdminAuthRequired(),
+    });
+  });
+
+  app.get('/api/gifts/export', (_req, res) => {
+    res.json({
+      version: 1,
+      app: 'CHÙA ONLINE',
+      exportedAt: new Date().toISOString(),
+      gifts: giftStore.listGifts(),
+      presets: giftStore.listPresets().filter((p) => !p.isBuiltin),
+    });
+  });
+
+  app.post('/api/gifts', requireAdminAuth, (req, res) => {
+    try {
+      const created = giftStore.createGift(req.body || {});
+      broadcastGiftsUpdated();
+      broadcastUnknownGiftsUpdated();
+      res.status(201).json({
+        ok: true,
+        gift: created,
+        gifts: giftStore.listGifts(),
+        unknownGifts: giftStore.listUnknownGifts(),
+      });
+    } catch (err: unknown) {
+      if (err instanceof GiftValidationError) {
+        res.status(err.statusCode).json({ ok: false, error: err.message });
+        return;
+      }
+      const message = err instanceof Error ? err.message : 'Không thể tạo cấu hình quà tặng.';
+      res.status(500).json({ ok: false, error: message });
+    }
+  });
+
+  app.put('/api/gifts/:giftId', requireAdminAuth, (req, res) => {
+    try {
+      const updated = giftStore.updateGift(String(req.params.giftId || ''), req.body || {});
+      broadcastGiftsUpdated();
+      broadcastUnknownGiftsUpdated();
+      res.json({
+        ok: true,
+        gift: updated,
+        gifts: giftStore.listGifts(),
+        unknownGifts: giftStore.listUnknownGifts(),
+      });
+    } catch (err: unknown) {
+      if (err instanceof GiftValidationError) {
+        res.status(err.statusCode).json({ ok: false, error: err.message });
+        return;
+      }
+      const message = err instanceof Error ? err.message : 'Không thể cập nhật cấu hình quà tặng.';
+      res.status(500).json({ ok: false, error: message });
+    }
+  });
+
+  app.delete('/api/gifts/:giftId', requireAdminAuth, (req, res) => {
+    const deleted = giftStore.deleteGift(String(req.params.giftId || ''));
+    if (!deleted) {
+      res.status(404).json({ ok: false, error: 'Không tìm thấy quà tặng cần xóa.' });
+      return;
+    }
+    broadcastGiftsUpdated();
+    res.json({ ok: true, gifts: giftStore.listGifts() });
+  });
+
+  app.post('/api/gifts/reset', requireAdminAuth, (_req, res) => {
+    const gifts = giftStore.resetToDefaultGifts();
+    broadcastGiftsUpdated();
+    res.json({ ok: true, gifts });
+  });
+
+  app.post('/api/gifts/import', requireAdminAuth, (req, res) => {
+    try {
+      const mode = req.body?.mode === 'replace' ? 'replace' : 'merge';
+      const payload = req.body?.payload !== undefined ? req.body.payload : req.body;
+      const result = giftStore.importGiftsBulk(payload, mode);
+      broadcastGiftsUpdated();
+      broadcastUnknownGiftsUpdated();
+      res.json({
+        ok: true,
+        importedCount: result.importedCount,
+        gifts: result.gifts,
+        presets: result.presets,
+        unknownGifts: giftStore.listUnknownGifts(),
+      });
+    } catch (err: unknown) {
+      if (err instanceof GiftValidationError) {
+        res.status(err.statusCode).json({ ok: false, error: err.message });
+        return;
+      }
+      const message = err instanceof Error ? err.message : 'Nhập tệp JSON thất bại.';
+      res.status(500).json({ ok: false, error: message });
+    }
+  });
+
+  app.post('/api/gifts/presets', requireAdminAuth, (req, res) => {
+    try {
+      const preset = giftStore.savePreset(req.body || {});
+      broadcastGiftsUpdated();
+      res.status(201).json({ ok: true, preset, presets: giftStore.listPresets() });
+    } catch (err: unknown) {
+      if (err instanceof GiftValidationError) {
+        res.status(err.statusCode).json({ ok: false, error: err.message });
+        return;
+      }
+      const message = err instanceof Error ? err.message : 'Không thể lưu bộ mẫu hành động.';
+      res.status(500).json({ ok: false, error: message });
+    }
+  });
+
+  app.delete('/api/gifts/presets/:presetId', requireAdminAuth, (req, res) => {
+    const deleted = giftStore.deletePreset(String(req.params.presetId || ''));
+    if (!deleted) {
+      res.status(400).json({
+        ok: false,
+        error: 'Không thể xóa bộ mẫu tích hợp sẵn hoặc không tìm thấy bộ mẫu.',
+      });
+      return;
+    }
+    broadcastGiftsUpdated();
+    res.json({ ok: true, presets: giftStore.listPresets() });
+  });
+
+  app.post('/api/gifts/unknown', (req, res) => {
+    const logged = giftStore.recordUnknownGift({
+      giftId: req.body?.giftId,
+      giftName: req.body?.giftName,
+      iconUrl: req.body?.iconUrl,
+      diamondCount: req.body?.diamondCount,
+      countDelta: req.body?.countDelta,
+      username: req.body?.username,
+      isDemo: req.body?.isDemo,
+    });
+    if (logged) {
+      broadcastUnknownGiftsUpdated();
+    }
+    res.json({ ok: true, unknownGifts: giftStore.listUnknownGifts() });
+  });
+
+  app.delete('/api/gifts/unknown', requireAdminAuth, (_req, res) => {
+    giftStore.clearUnknownGifts();
+    broadcastUnknownGiftsUpdated();
+    res.json({ ok: true, unknownGifts: [] });
+  });
+
+  // ============================================================================
+  // XIN XĂM CẦU NGUYỆN (100 QUẺ XĂM + SETTINGS + DEDUPLICATED DRAW PERSISTENCE)
+  // ============================================================================
+
+  app.get('/api/xinxam', (_req, res) => {
+    res.json({
+      ok: true,
+      ...fortuneStore.getSnapshot(),
+      authRequired: isAdminAuthRequired(),
+    });
+  });
+
+  app.put('/api/xinxam/settings', requireAdminAuth, (req, res) => {
+    try {
+      const incoming = req.body || {};
+      const ids = getXinXamGiftIds({
+        giftId: normalizeGiftId(incoming.giftId ?? fortuneStore.getSettings().giftId),
+        additionalGiftIds: incoming.additionalGiftIds ?? fortuneStore.getSettings().additionalGiftIds,
+      });
+      const conflictingId = ids.find((id) => giftStore.getGiftById(id));
+      if (conflictingId) {
+        res.status(400).json({ ok: false, error: `Gift ID ${conflictingId} đang thuộc mục Quà TikTok, hãy gỡ ID trùng trước khi lưu Xin Xăm.` });
+        return;
+      }
+      const settings = fortuneStore.updateSettings(incoming);
+      broadcastXinXamUpdated();
+      res.json({ ok: true, settings });
+    } catch (err: unknown) {
+      const status = err instanceof FortuneValidationError ? err.statusCode : 400;
+      const message = err instanceof Error ? err.message : 'Lỗi cập nhật cấu hình Xin Xăm.';
+      res.status(status).json({ ok: false, error: message });
+    }
+  });
+
+  app.post('/api/xinxam/fortunes', requireAdminAuth, (req, res) => {
+    try {
+      const fortune = fortuneStore.createFortune(req.body || {});
+      broadcastXinXamUpdated();
+      res.status(201).json({ ok: true, fortune, fortunes: fortuneStore.getAllFortunes() });
+    } catch (err: unknown) {
+      const status = err instanceof FortuneValidationError ? err.statusCode : 400;
+      const message = err instanceof Error ? err.message : 'Lỗi thêm quẻ xăm mới.';
+      res.status(status).json({ ok: false, error: message });
+    }
+  });
+
+  app.put('/api/xinxam/fortunes/:fortuneId', requireAdminAuth, (req, res) => {
+    try {
+      const fortune = fortuneStore.updateFortune(req.params.fortuneId, req.body || {});
+      broadcastXinXamUpdated();
+      res.json({ ok: true, fortune, fortunes: fortuneStore.getAllFortunes() });
+    } catch (err: unknown) {
+      const status = err instanceof FortuneValidationError ? err.statusCode : 400;
+      const message = err instanceof Error ? err.message : 'Lỗi cập nhật quẻ xăm.';
+      res.status(status).json({ ok: false, error: message });
+    }
+  });
+
+  app.delete('/api/xinxam/fortunes/:fortuneId', requireAdminAuth, (req, res) => {
+    try {
+      fortuneStore.deleteFortune(req.params.fortuneId);
+      broadcastXinXamUpdated();
+      res.json({ ok: true, fortunes: fortuneStore.getAllFortunes() });
+    } catch (err: unknown) {
+      const status = err instanceof FortuneValidationError ? err.statusCode : 400;
+      const message = err instanceof Error ? err.message : 'Lỗi xóa quẻ xăm.';
+      res.status(status).json({ ok: false, error: message });
+    }
+  });
+
+  app.post('/api/xinxam/reset', requireAdminAuth, (_req, res) => {
+    const fortunes = fortuneStore.resetDefaults();
+    broadcastXinXamUpdated();
+    res.json({ ok: true, fortunes });
+  });
+
+  app.post('/api/xinxam/import', requireAdminAuth, (req, res) => {
+    try {
+      const mode = req.body?.mode === 'replace' ? 'replace' : 'merge';
+      const result = fortuneStore.importFortunesBulk(req.body?.payload, mode);
+      broadcastXinXamUpdated();
+      res.json({
+        ok: true,
+        importedCount: result.importedCount,
+        fortunes: result.fortunes,
+        settings: fortuneStore.getSettings(),
+      });
+    } catch (err: unknown) {
+      const status = err instanceof FortuneValidationError ? err.statusCode : 400;
+      const message = err instanceof Error ? err.message : 'Lỗi nhập JSON quẻ xăm.';
+      res.status(status).json({ ok: false, error: message });
+    }
+  });
+
+  app.post('/api/xinxam/draw', (req, res) => {
+    try {
+      const draw = fortuneStore.drawFortuneForEvent({
+        eventDedupeKey: String(req.body?.eventDedupeKey || ''),
+        userId: String(req.body?.userId || 'phattu'),
+        username: String(req.body?.username || 'phattu'),
+        nickname: req.body?.nickname ? String(req.body.nickname) : undefined,
+        avatarUrl: req.body?.avatarUrl ? String(req.body.avatarUrl) : undefined,
+        isDemo: Boolean(req.body?.isDemo),
+        forcedFortuneNumber:
+          req.body?.forcedFortuneNumber !== undefined
+            ? Number(req.body.forcedFortuneNumber)
+            : undefined,
+      });
+      io.emit('xinxam:draw_recorded', draw);
+      res.json({ ok: true, draw });
+    } catch (err: unknown) {
+      const status = err instanceof FortuneValidationError ? err.statusCode : 400;
+      const message = err instanceof Error ? err.message : 'Không thể rút quẻ xăm.';
+      res.status(status).json({ ok: false, error: message });
+    }
+  });
+
+  // ============================================================================
+  // TIKTOK LIVE CONNECTION & VIENEU TTS PROXY ENDPOINTS
+  // ============================================================================
+
+  // Connect to real TikTok LIVE stream
+  app.post('/api/tiktok/connect', async (req, res) => {
+    try {
+      const username = String(req.body?.username || '');
+      const snapshot = await tiktokAdapter.connect(username);
+      res.json(snapshot);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Lỗi kết nối TikTok LIVE';
+      res.status(500).json({ error: message, snapshot: tiktokAdapter.getSnapshot() });
+    }
+  });
+
+  // Disconnect from TikTok LIVE stream
+  app.post('/api/tiktok/disconnect', async (req, res) => {
+    const switchToDemo = Boolean(req.body?.switchToDemo);
+    const snapshot = await tiktokAdapter.disconnect(switchToDemo);
+    res.json(snapshot);
+  });
+
+  // External TikTok-Live-Connector / Streamer.bot / TikFinity local webhook adapter
+  app.post('/api/tiktok/webhook', (req, res) => {
+    const event = tiktokAdapter.ingestExternalWebhookEvent(req.body || {});
+    if (!event) {
+      res.status(400).json({
+        ok: false,
+        error: 'Sự kiện không hợp lệ hoặc bị bộ lọc nội dung từ chối.',
+      });
+      return;
+    }
+    res.json({ ok: true, event });
+  });
+
+  // Retrieve available VieNeu voices (Cloud /api/v1/voices or Local Mac /v1/voices)
+  app.get('/api/tts/voices', async (req, res) => {
+    try {
+      const mode: VieNeuMode = req.query.mode === 'local' ? 'local' : 'cloud';
+      const localEndpoint = req.query.localEndpoint ? String(req.query.localEndpoint) : undefined;
+      const catalog = await fetchVieNeuVoices(mode, localEndpoint);
+      res.json(catalog);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Không tải được danh sách giọng đọc.';
+      res.status(500).json({ ok: false, error: message, voices: [] });
+    }
+  });
+
+  // Real TTS Connection Test Endpoint (Never fakes responses; returns actual audio or actual API error)
+  app.post('/api/tts/test', async (req, res) => {
+    try {
+      const provider = req.body?.provider || 'vieneu';
+      if (provider === 'browser') {
+        res.json({
+          ok: true,
+          providerUsed: 'browser',
+          latencyMs: 0,
+          message: 'Giọng đọc trình duyệt (SpeechSynthesis) sẵn sàng trên máy khách.',
+        });
+        return;
+      }
+
+      const testPhrase = String(
+        req.body?.text || 'Nam mô A Di Đà Phật. Chùa Online kính chúc quý Phật tử thân tâm an lạc.',
+      );
+
+      const result = await synthesizeSpeechOnServer({
+        provider,
+        vieneuMode: req.body?.vieneuMode === 'local' ? 'local' : 'cloud',
+        vieneuModel: req.body?.vieneuModel ? String(req.body.vieneuModel) : 'vieneu-v4',
+        localEndpoint: req.body?.localEndpoint ? String(req.body.localEndpoint) : undefined,
+        endpoint: req.body?.endpoint ? String(req.body.endpoint) : undefined,
+        voiceId: req.body?.voiceId ? String(req.body.voiceId) : 'Ngọc Lan',
+        gender: req.body?.gender === 'male' ? 'male' : 'female',
+        speed: typeof req.body?.speed === 'number' ? req.body.speed : 0.96,
+        text: testPhrase,
+      });
+
+      res.json({
+        ok: true,
+        ...result,
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Lỗi kiểm tra kết nối TTS.';
+      res.status(502).json({
+        ok: false,
+        error: message,
+      });
+    }
+  });
+
+  // Server-side TTS Proxy (keeps API keys strictly on server)
+  app.post('/api/tts', async (req, res) => {
+    try {
+      const result = await synthesizeSpeechOnServer({
+        provider: req.body?.provider || 'vieneu',
+        vieneuMode: req.body?.vieneuMode === 'local' ? 'local' : 'cloud',
+        vieneuModel: req.body?.vieneuModel ? String(req.body.vieneuModel) : 'vieneu-v4',
+        localEndpoint: req.body?.localEndpoint ? String(req.body.localEndpoint) : undefined,
+        text: String(req.body?.text || ''),
+        endpoint: req.body?.endpoint ? String(req.body.endpoint) : undefined,
+        voiceId: req.body?.voiceId ? String(req.body.voiceId) : 'Ngọc Lan',
+        gender: req.body?.gender === 'male' ? 'male' : 'female',
+        speed: typeof req.body?.speed === 'number' ? req.body.speed : 0.96,
+      });
+      res.json({ ok: true, ...result });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Không thể tạo giọng đọc từ máy chủ.';
+      res.status(502).json({ ok: false, error: message });
+    }
+  });
+
+  // Optional AI peaceful background greeting endpoint (with safe verified fallback)
+  app.post('/api/narration/peaceful', async (_req, res) => {
+    try {
+      const message = await generatePeacefulVietnameseGreeting();
+      res.json({ ok: true, message, source: 'gemini' });
+    } catch (err: unknown) {
+      const fallback =
+        DEFAULT_PEACEFUL_MESSAGES[Math.floor(Math.random() * DEFAULT_PEACEFUL_MESSAGES.length)];
+      res.json({
+        ok: true,
+        message: fallback,
+        source: 'template',
+        warning: err instanceof Error ? err.message : undefined,
+      });
+    }
+  });
+
+  // ============================================================================
+  // MA GIÁO ONLINE - AUTHORITATIVE CONFIGURATION & REALTIME OBS SYNC
+  // ============================================================================
+
+  app.get('/api/magiao/config', (_req, res) => {
+    res.json({ ok: true, config: maGiaoConfigStore.getConfig() });
+  });
+
+  app.put('/api/magiao/config', requireAdminAuth, (req, res) => {
+    try {
+      const updated = maGiaoConfigStore.updateConfig(req.body || {});
+      io.emit('magiao:config_updated', updated);
+      res.json({ ok: true, config: updated });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Lỗi cập nhật cấu hình Ma Giáo.';
+      res.status(500).json({ ok: false, error: message });
+    }
+  });
+
+  app.post('/api/magiao/config/reset', requireAdminAuth, (_req, res) => {
+    const defaults = maGiaoConfigStore.resetToDefaults();
+    io.emit('magiao:config_updated', defaults);
+    res.json({ ok: true, config: defaults });
+  });
+
+  app.get('/api/magiao/obs-sync', (_req, res) => {
+    const cfg = maGiaoConfigStore.getConfig();
+    res.json({ ok: true, obsSync: cfg.obsSync, layout: cfg.layout });
+  });
+
+  app.put('/api/magiao/obs-sync', (req, res) => {
+    const ip = req.socket.remoteAddress || '';
+    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(ip)) {
+      res.status(403).json({ ok: false, error: 'Chỉ cho phép thay đổi cấu hình OBS từ máy cục bộ.' });
+      return;
+    }
+    try {
+      const updated = maGiaoConfigStore.updateConfig({
+        obsSync: req.body?.obsSync || {},
+        layout: req.body?.layout || {},
+      });
+      io.emit('magiao:obs_sync', { obsSync: updated.obsSync, layout: updated.layout });
+      res.json({ ok: true, obsSync: updated.obsSync, layout: updated.layout });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Cấu hình OBS không hợp lệ';
+      res.status(400).json({ ok: false, error: message });
+    }
+  });
+
+  app.post('/api/magiao/action', (req, res) => {
+    const action = req.body || {};
+    io.emit('magiao:admin_action', action);
+    res.json({ ok: true, action });
+  });
+
+  app.post('/api/magiao/gifts/unknown', (req, res) => {
+    maGiaoConfigStore.recordUnknownGift({
+      giftId: String(req.body?.giftId || ''),
+      giftName: req.body?.giftName,
+      diamondCount: req.body?.diamondCount,
+      username: req.body?.username,
+    });
+    res.json({ ok: true });
+  });
+
+  app.delete('/api/magiao/gifts/unknown', requireAdminAuth, (_req, res) => {
+    maGiaoConfigStore.clearUnknownGifts();
+    res.json({ ok: true });
+  });
+
+  // Socket.IO Real-Time Synchronization
+  io.on('connection', (socket) => {
+    socket.emit('tiktok:status', tiktokAdapter.getSnapshot());
+    socket.emit('gifts:updated', {
+      gifts: giftStore.listGifts(),
+      presets: giftStore.listPresets(),
+    });
+    socket.emit('gifts:unknown_updated', {
+      unknownGifts: giftStore.listUnknownGifts(),
+    });
+    socket.emit('xinxam:updated', fortuneStore.getSnapshot());
+    const obsSync = readObsSyncSettings();
+    if (obsSync) socket.emit('temple:obs_sync_settings', obsSync); // CHUA_OBS_SYNC_V10
+
+    // Ma Giáo Real-Time Config & State Sync
+    socket.emit('magiao:config_updated', maGiaoConfigStore.getConfig());
+
+    socket.on('magiao:admin_action', (action: unknown) => {
+      socket.broadcast.emit('magiao:admin_action', action);
+    });
+
+    socket.on('magiao:update_config', (patch: unknown) => {
+      if (patch && typeof patch === 'object') {
+        const updated = maGiaoConfigStore.updateConfig(patch as any);
+        io.emit('magiao:config_updated', updated);
+      }
+    });
+
+    socket.on('tiktok:connect', async (payload: { username?: string }) => {
+      await tiktokAdapter.connect(String(payload?.username || ''));
+    });
+
+    socket.on('tiktok:disconnect', async (payload?: { switchToDemo?: boolean }) => {
+      await tiktokAdapter.disconnect(Boolean(payload?.switchToDemo));
+    });
+
+    // Broadcast demo or multi-window OBS synced events across connected tabs (e.g., Admin panel -> OBS window)
+    socket.on('temple:broadcast_demo_event', (event: Partial<TikTokNormalizedEvent>) => {
+      tiktokAdapter.ingestExternalWebhookEvent({
+        ...event,
+        isDemo: true,
+      });
+    });
+
+    socket.on('temple:admin_command', (cmd: { action: string; payload?: unknown }) => {
+      socket.broadcast.emit('temple:admin_command', cmd);
+    });
+  });
+
+  // Serve permanent static assets in /public directly (e.g. /assets/temple-background.png)
+  app.use(express.static(path.join(__dirname, 'public')));
+
+  const isProd = process.env.NODE_ENV === 'production';
+  if (!isProd) {
+    const vite = await createViteServer({
+      server: {
+        middlewareMode: true,
+        hmr: false,
+      },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(__dirname, 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  const portArgIndex = process.argv.indexOf('--port');
+  const cliPort = portArgIndex !== -1 ? parseInt(process.argv[portArgIndex + 1], 10) : NaN;
+  const PORT = Number.isFinite(cliPort) ? cliPort : parseInt(process.env.PORT || '3000', 10);
+
+  const server = httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`[CHÙA ONLINE] Server & Socket.IO listening on http://0.0.0.0:${PORT}`);
+  });
+
+  const onShutdown = () => {
+    server.close(() => {
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(0), 1500).unref();
+  };
+  process.on('SIGTERM', onShutdown);
+  process.on('SIGINT', onShutdown);
+}
+
+startServer().catch((err) => {
+  console.error('Failed to start CHÙA ONLINE server:', err);
+  process.exit(1);
+});

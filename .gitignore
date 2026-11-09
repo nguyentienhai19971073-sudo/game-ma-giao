@@ -1,0 +1,30 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+data/
+
+
+# Dependencies and generated files
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Backups
+.chua*
+.tinh_tam*
+*.zip

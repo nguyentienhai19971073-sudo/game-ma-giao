@@ -1,0 +1,49 @@
+name: Tao bieu tuong Tinh Tam Online (macOS + Windows)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/tinh-tam-launcher/desktop/**'
+      - '.github/workflows/build-tinh-tam-openers.yml'
+      - 'tools/tinh-tam-launcher/launcher.cjs'
+      - 'tools/tinh-tam-launcher/interface.html'
+
+jobs:
+  macos:
+    name: Dong goi TINH TAM ONLINE.app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tao goi ma nguon co ung dung .app
+        shell: bash
+        run: |
+          mkdir -p output/TINH_TAM_ONLINE_MAC
+          git archive --format=tar HEAD | tar -x -C output/TINH_TAM_ONLINE_MAC
+          python3 tools/tinh-tam-launcher/desktop/make_macos_app.py --project output/TINH_TAM_ONLINE_MAC
+          ditto -c -k --sequesterRsrc --keepParent output/TINH_TAM_ONLINE_MAC TINH_TAM_ONLINE_MAC.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TINH_TAM_ONLINE_MAC
+          path: TINH_TAM_ONLINE_MAC.zip
+          if-no-files-found: error
+
+  windows:
+    name: Dong goi TINH_TAM_ONLINE.exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tao .exe Windows x64
+        shell: pwsh
+        run: |
+          dotnet publish tools/tinh-tam-launcher/desktop/WinLauncher/TinhTamOnlineOpen.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false -p:DebugType=None -o out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git archive --format=zip --output=source.zip HEAD
+          Expand-Archive -Path source.zip -DestinationPath TINH_TAM_ONLINE_WINDOWS
+          Copy-Item out/TINH_TAM_ONLINE.exe TINH_TAM_ONLINE_WINDOWS/TINH_TAM_ONLINE.exe
+          Compress-Archive -Path TINH_TAM_ONLINE_WINDOWS -DestinationPath TINH_TAM_ONLINE_WINDOWS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TINH_TAM_ONLINE_WINDOWS
+          path: TINH_TAM_ONLINE_WINDOWS.zip
+          if-no-files-found: error

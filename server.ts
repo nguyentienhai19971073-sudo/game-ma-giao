@@ -14,20 +14,13 @@ import {
   isAdminAuthorizedRequest,
 } from './server/giftStore.ts';
 import {
-  FortuneValidationError,
-  fortuneStore,
-} from './server/fortuneStore.ts';
-import {
   fetchVieNeuVoices,
-  generatePeacefulVietnameseGreeting,
   synthesizeSpeechOnServer,
 } from './server/ttsProxy.ts';
 import {
-  DEFAULT_PEACEFUL_MESSAGES,
   TikTokNormalizedEvent,
   VieNeuMode,
   normalizeGiftId,
-  getXinXamGiftIds,
 } from './src/types/temple.ts';
 import { maGiaoConfigStore } from './server/maGiaoStore.ts';
 
@@ -72,19 +65,12 @@ async function startServer() {
     });
   };
 
-  const broadcastXinXamUpdated = () => {
-    io.emit('xinxam:updated', fortuneStore.getSnapshot());
-  };
 
   const tiktokAdapter = new TikTokLiveAdapter(
     (normalizedEvent: TikTokNormalizedEvent) => {
       if (normalizedEvent.type === 'gift' && normalizedEvent.giftId !== undefined) {
         const mapped = giftStore.getGiftById(normalizedEvent.giftId);
-        const xinXamCfg = fortuneStore.getSettings();
-        const isXinXamGift =
-          xinXamCfg.enabled &&
-          getXinXamGiftIds(xinXamCfg).includes(normalizeGiftId(normalizedEvent.giftId));
-        if (!mapped && !isXinXamGift && !normalizedEvent.isStreakCompletionOnly) {
+        if (!mapped && !normalizedEvent.isStreakCompletionOnly) {
           const logged = giftStore.recordUnknownGift({
             giftId: normalizedEvent.giftId,
             giftName: normalizedEvent.giftName,
@@ -298,119 +284,6 @@ app.put('/api/obs-sync', (req, res) => {
   // XIN XĂM CẦU NGUYỆN (100 QUẺ XĂM + SETTINGS + DEDUPLICATED DRAW PERSISTENCE)
   // ============================================================================
 
-  app.get('/api/xinxam', (_req, res) => {
-    res.json({
-      ok: true,
-      ...fortuneStore.getSnapshot(),
-      authRequired: isAdminAuthRequired(),
-    });
-  });
-
-  app.put('/api/xinxam/settings', requireAdminAuth, (req, res) => {
-    try {
-      const incoming = req.body || {};
-      const ids = getXinXamGiftIds({
-        giftId: normalizeGiftId(incoming.giftId ?? fortuneStore.getSettings().giftId),
-        additionalGiftIds: incoming.additionalGiftIds ?? fortuneStore.getSettings().additionalGiftIds,
-      });
-      const conflictingId = ids.find((id) => giftStore.getGiftById(id));
-      if (conflictingId) {
-        res.status(400).json({ ok: false, error: `Gift ID ${conflictingId} đang thuộc mục Quà TikTok, hãy gỡ ID trùng trước khi lưu Xin Xăm.` });
-        return;
-      }
-      const settings = fortuneStore.updateSettings(incoming);
-      broadcastXinXamUpdated();
-      res.json({ ok: true, settings });
-    } catch (err: unknown) {
-      const status = err instanceof FortuneValidationError ? err.statusCode : 400;
-      const message = err instanceof Error ? err.message : 'Lỗi cập nhật cấu hình Xin Xăm.';
-      res.status(status).json({ ok: false, error: message });
-    }
-  });
-
-  app.post('/api/xinxam/fortunes', requireAdminAuth, (req, res) => {
-    try {
-      const fortune = fortuneStore.createFortune(req.body || {});
-      broadcastXinXamUpdated();
-      res.status(201).json({ ok: true, fortune, fortunes: fortuneStore.getAllFortunes() });
-    } catch (err: unknown) {
-      const status = err instanceof FortuneValidationError ? err.statusCode : 400;
-      const message = err instanceof Error ? err.message : 'Lỗi thêm quẻ xăm mới.';
-      res.status(status).json({ ok: false, error: message });
-    }
-  });
-
-  app.put('/api/xinxam/fortunes/:fortuneId', requireAdminAuth, (req, res) => {
-    try {
-      const fortune = fortuneStore.updateFortune(req.params.fortuneId, req.body || {});
-      broadcastXinXamUpdated();
-      res.json({ ok: true, fortune, fortunes: fortuneStore.getAllFortunes() });
-    } catch (err: unknown) {
-      const status = err instanceof FortuneValidationError ? err.statusCode : 400;
-      const message = err instanceof Error ? err.message : 'Lỗi cập nhật quẻ xăm.';
-      res.status(status).json({ ok: false, error: message });
-    }
-  });
-
-  app.delete('/api/xinxam/fortunes/:fortuneId', requireAdminAuth, (req, res) => {
-    try {
-      fortuneStore.deleteFortune(req.params.fortuneId);
-      broadcastXinXamUpdated();
-      res.json({ ok: true, fortunes: fortuneStore.getAllFortunes() });
-    } catch (err: unknown) {
-      const status = err instanceof FortuneValidationError ? err.statusCode : 400;
-      const message = err instanceof Error ? err.message : 'Lỗi xóa quẻ xăm.';
-      res.status(status).json({ ok: false, error: message });
-    }
-  });
-
-  app.post('/api/xinxam/reset', requireAdminAuth, (_req, res) => {
-    const fortunes = fortuneStore.resetDefaults();
-    broadcastXinXamUpdated();
-    res.json({ ok: true, fortunes });
-  });
-
-  app.post('/api/xinxam/import', requireAdminAuth, (req, res) => {
-    try {
-      const mode = req.body?.mode === 'replace' ? 'replace' : 'merge';
-      const result = fortuneStore.importFortunesBulk(req.body?.payload, mode);
-      broadcastXinXamUpdated();
-      res.json({
-        ok: true,
-        importedCount: result.importedCount,
-        fortunes: result.fortunes,
-        settings: fortuneStore.getSettings(),
-      });
-    } catch (err: unknown) {
-      const status = err instanceof FortuneValidationError ? err.statusCode : 400;
-      const message = err instanceof Error ? err.message : 'Lỗi nhập JSON quẻ xăm.';
-      res.status(status).json({ ok: false, error: message });
-    }
-  });
-
-  app.post('/api/xinxam/draw', (req, res) => {
-    try {
-      const draw = fortuneStore.drawFortuneForEvent({
-        eventDedupeKey: String(req.body?.eventDedupeKey || ''),
-        userId: String(req.body?.userId || 'phattu'),
-        username: String(req.body?.username || 'phattu'),
-        nickname: req.body?.nickname ? String(req.body.nickname) : undefined,
-        avatarUrl: req.body?.avatarUrl ? String(req.body.avatarUrl) : undefined,
-        isDemo: Boolean(req.body?.isDemo),
-        forcedFortuneNumber:
-          req.body?.forcedFortuneNumber !== undefined
-            ? Number(req.body.forcedFortuneNumber)
-            : undefined,
-      });
-      io.emit('xinxam:draw_recorded', draw);
-      res.json({ ok: true, draw });
-    } catch (err: unknown) {
-      const status = err instanceof FortuneValidationError ? err.statusCode : 400;
-      const message = err instanceof Error ? err.message : 'Không thể rút quẻ xăm.';
-      res.status(status).json({ ok: false, error: message });
-    }
-  });
-
   // ============================================================================
   // TIKTOK LIVE CONNECTION & VIENEU TTS PROXY ENDPOINTS
   // ============================================================================
@@ -524,23 +397,6 @@ app.put('/api/obs-sync', (req, res) => {
     }
   });
 
-  // Optional AI peaceful background greeting endpoint (with safe verified fallback)
-  app.post('/api/narration/peaceful', async (_req, res) => {
-    try {
-      const message = await generatePeacefulVietnameseGreeting();
-      res.json({ ok: true, message, source: 'gemini' });
-    } catch (err: unknown) {
-      const fallback =
-        DEFAULT_PEACEFUL_MESSAGES[Math.floor(Math.random() * DEFAULT_PEACEFUL_MESSAGES.length)];
-      res.json({
-        ok: true,
-        message: fallback,
-        source: 'template',
-        warning: err instanceof Error ? err.message : undefined,
-      });
-    }
-  });
-
   // ============================================================================
   // MA GIÁO ONLINE - AUTHORITATIVE CONFIGURATION & REALTIME OBS SYNC
   // ============================================================================
@@ -621,7 +477,6 @@ app.put('/api/obs-sync', (req, res) => {
     socket.emit('gifts:unknown_updated', {
       unknownGifts: giftStore.listUnknownGifts(),
     });
-    socket.emit('xinxam:updated', fortuneStore.getSnapshot());
     const obsSync = readObsSyncSettings();
     if (obsSync) socket.emit('temple:obs_sync_settings', obsSync); // CHUA_OBS_SYNC_V10
 
@@ -647,17 +502,6 @@ app.put('/api/obs-sync', (req, res) => {
       await tiktokAdapter.disconnect(Boolean(payload?.switchToDemo));
     });
 
-    // Broadcast demo or multi-window OBS synced events across connected tabs (e.g., Admin panel -> OBS window)
-    socket.on('temple:broadcast_demo_event', (event: Partial<TikTokNormalizedEvent>) => {
-      tiktokAdapter.ingestExternalWebhookEvent({
-        ...event,
-        isDemo: true,
-      });
-    });
-
-    socket.on('temple:admin_command', (cmd: { action: string; payload?: unknown }) => {
-      socket.broadcast.emit('temple:admin_command', cmd);
-    });
   });
 
   // Serve permanent static assets in /public directly (e.g. /assets/temple-background.png)

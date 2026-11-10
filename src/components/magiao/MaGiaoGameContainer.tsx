@@ -5,7 +5,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { SlidersHorizontal, Volume2, VolumeX, Swords, Church } from 'lucide-react';
+import { SlidersHorizontal, Volume2, VolumeX } from 'lucide-react';
 import {
   MaGiaoStateSnapshot,
   maGiaoGameManager,
@@ -18,11 +18,7 @@ import { MaGiaoAdminDashboard } from './MaGiaoAdminDashboard';
 import { MaGiaoAdminCp } from './admin/MaGiaoAdminCp';
 import { TikTokNormalizedEvent } from '../../types/temple';
 
-interface Props {
-  onSwitchToChuaOnline?: () => void;
-}
-
-export const MaGiaoGameContainer: React.FC<Props> = ({ onSwitchToChuaOnline }) => {
+export const MaGiaoGameContainer: React.FC = () => {
   const [gameState, setGameState] = useState<MaGiaoStateSnapshot>(() =>
     maGiaoGameManager.getSnapshot(),
   );
@@ -155,18 +151,6 @@ export const MaGiaoGameContainer: React.FC<Props> = ({ onSwitchToChuaOnline }) =
 
             {/* Quick Actions */}
             <div className="flex items-center gap-1.5">
-              {/* Switch to Chùa Online button */}
-              {onSwitchToChuaOnline && (
-                <button
-                  onClick={onSwitchToChuaOnline}
-                  title="Chuyển sang Chùa Online 2"
-                  className="px-2 py-1 rounded-lg bg-black/80 hover:bg-amber-950 border border-amber-600/50 text-amber-300 text-[10px] font-bold shadow-md transition-colors flex items-center gap-1"
-                >
-                  <Church className="w-3 h-3" />
-                  <span className="hidden sm:inline">Chùa Online</span>
-                </button>
-              )}
-
               {/* Audio Mute Toggle */}
               <button
                 onClick={toggleAudio}
@@ -210,7 +194,6 @@ export const MaGiaoGameContainer: React.FC<Props> = ({ onSwitchToChuaOnline }) =
       {adminOpen && (
         <MaGiaoAdminCp
           onClose={() => setAdminOpen(false)}
-          onSwitchToChuaOnline={onSwitchToChuaOnline}
         />
       )}
     </div>

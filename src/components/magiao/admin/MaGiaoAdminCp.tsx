@@ -1,7 +1,7 @@
 /**
  * MA GIÁO ONLINE - ADMIN CONTROL PANEL (/admincp)
  * Comprehensive, production-grade 20-category administrator dashboard
- * Inherited from Chùa Online 2 architecture, fully adapted for Ma Giáo Online.
+ * Ma Giáo Online administration.
  */
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
@@ -138,10 +138,9 @@ const CATEGORIES: CategoryItem[] = [
 
 interface Props {
   onClose?: () => void;
-  onSwitchToChuaOnline?: () => void;
 }
 
-export const MaGiaoAdminCp: React.FC<Props> = ({ onClose, onSwitchToChuaOnline }) => {
+export const MaGiaoAdminCp: React.FC<Props> = ({ onClose }) => {
   const [activeCategory, setActiveCategory] = useState<AdminCategory>('overview');
   const [searchQuery, setSearchQuery] = useState('');
   const [config, setConfig] = useState<MaGiaoFullAdminConfig>(DEFAULT_MA_GIAO_FULL_CONFIG);
@@ -352,17 +351,6 @@ export const MaGiaoAdminCp: React.FC<Props> = ({ onClose, onSwitchToChuaOnline }
             <RotateCcw className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Mặc Định</span>
           </button>
-
-          {onSwitchToChuaOnline && (
-            <button
-              onClick={onSwitchToChuaOnline}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-950/70 hover:bg-amber-900 border border-amber-600/50 text-amber-300 text-xs font-semibold cursor-pointer"
-            >
-              <span>🪷</span>
-              <span className="hidden sm:inline">Chùa Online 2</span>
-            </button>
-          )}
-
           {onClose && (
             <button
               onClick={onClose}
@@ -1478,7 +1466,7 @@ function TtsVoicePanel({
       <div className="border-b border-red-950 pb-3 flex items-center justify-between">
         <div>
           <h2 className="text-lg font-black text-amber-300">10. GIỌNG ĐỌC &amp; TTS (AZURE / VIENEU / TRÌNH DUYỆT)</h2>
-          <p className="text-xs text-slate-400">Kế thừa kiến trúc Azure Speech &amp; VieNeu từ Chùa Online 2</p>
+          <p className="text-xs text-slate-400">Cấu hình giọng đọc Ma Giáo qua Azure Speech, VieNeu và trình duyệt</p>
         </div>
         <button
           onClick={testTTS}
@@ -1886,7 +1874,7 @@ function ObsStreamingPanel({
     <div className="space-y-6 max-w-2xl">
       <div className="border-b border-red-950 pb-3">
         <h2 className="text-lg font-black text-amber-300">17. OBS BROWSER SOURCE &amp; ĐỒNG BỘ WEBSOCKET</h2>
-        <p className="text-xs text-slate-400">Kế thừa chuẩn OBS sync từ Chùa Online 2, tự phục hồi khi ngắt kết nối</p>
+        <p className="text-xs text-slate-400">Đồng bộ OBS Ma Giáo qua WebSocket, tự phục hồi khi ngắt kết nối</p>
       </div>
 
       <div className="p-4 rounded-xl bg-black/60 border border-red-950 space-y-3 text-xs text-slate-300">
